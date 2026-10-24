@@ -76,7 +76,7 @@
   </section>
 
   <section class="card" id="result">
-    <p class="ok">✓ Signature captured</p>
+    <p class="ok" id="status">✓ Signature captured</p>
     <img id="outImg" alt="Signed proof of delivery">
     <p class="steps" id="instr"></p>
     <div class="row">
@@ -89,6 +89,7 @@
 <script>
 (function(){
   var TZ='America/Toronto', EMAIL='kobisdelivery@gmail.com';
+  var SEND_URL="https://script.google.com/macros/s/AKfycbwo-KuUayEpIAgRoB-Hc6Ip-FXrZXUfQKO8uJwwE0-75fWzskljTDt8vq6LzMJLSYXC/exec", SEND_KEY='mcazmRkP4d9YWbhW', SEND_TIMEOUT_MS=20000;
   var q=new URLSearchParams(location.search);
   function p(k){return (q.get(k)||'').trim();}
   var info={wb:p('wb'),customer:p('customer'),from:p('from'),to:p('to'),pieces:p('pieces'),weight:p('weight')};
@@ -191,6 +192,7 @@
   }
 
   document.getElementById('done').onclick=function(){
+    if(document.getElementById('result').style.display==='block') return;
     hideErr();
     var name=document.getElementById('name').value.trim();
     var inked=strokes.reduce(function(n,s){return n+s.length;},0);
@@ -207,22 +209,54 @@
       var blob=new Blob([arr],{type:'image/png'});
       var safe=String(wbLabel).replace(/[^A-Za-z0-9_-]+/g,'_');
       try{lastFile=new File([blob],'Signature-'+safe+'.png',{type:'image/png'});}catch(_){lastFile=null;}
-      var canShare=!!(lastFile&&navigator.canShare&&navigator.share&&navigator.canShare({files:[lastFile]}));
-      var instr=document.getElementById('instr'),shareBtn=document.getElementById('share'),note=document.getElementById('note');
-      if(canShare){
-        instr.innerHTML='Tap <b>Share</b> \u2192 <b>Mail</b> \u2192 send to <b>'+EMAIL+'</b> with subject <b>Signature '+escapeHtml(wbLabel)+'</b>';
-        shareBtn.style.display='';
-      }else{
-        instr.innerHTML='Sharing isn\u2019t available here. <b>Press and hold the image \u2192 Save to Photos</b>, then email it to <b>'+EMAIL+'</b> with subject <b>Signature '+escapeHtml(wbLabel)+'</b>.';
-        shareBtn.style.display='none';
-      }
+      var instr=document.getElementById('instr'),shareBtn=document.getElementById('share'),note=document.getElementById('note'),status=document.getElementById('status');
       note.textContent=lastText;
       document.getElementById('signCard').style.display='none';
       var r=document.getElementById('result');r.style.display='block';
       r.scrollIntoView({behavior:'smooth',block:'start'});
-      if(canShare){ doShare(); }
+      function shareFallback(auto,reason){
+        status.textContent='\u2713 Signature captured';
+        var canShare=!!(lastFile&&navigator.canShare&&navigator.share&&navigator.canShare({files:[lastFile]}));
+        var pre=reason?'<b>Couldn\u2019t send automatically</b> ('+escapeHtml(reason)+'). ':'';
+        if(canShare){
+          instr.innerHTML=pre+'Tap <b>Share</b> \u2192 <b>Mail</b> \u2192 send to <b>'+EMAIL+'</b> with subject <b>Signature '+escapeHtml(wbLabel)+'</b>';
+          shareBtn.style.display='';
+        }else{
+          instr.innerHTML=pre+'Sharing isn\u2019t available here. <b>Press and hold the image \u2192 Save to Photos</b>, then email it to <b>'+EMAIL+'</b> with subject <b>Signature '+escapeHtml(wbLabel)+'</b>.';
+          shareBtn.style.display='none';
+        }
+        if(canShare&&auto){ doShare(); }
+      }
+      var configured=SEND_URL&&SEND_URL.indexOf('__')!==0;
+      if(!configured||navigator.onLine===false||!window.fetch){
+        // Still inside the tap, so the share sheet can open automatically (old behaviour).
+        shareFallback(true,configured?'no signal':'');
+        return;
+      }
+      status.textContent='Sending\u2026';
+      instr.innerHTML='Sending the signature to Kobi\u2019s Delivery. Please wait.';
+      shareBtn.style.display='none';
+      sendSignature({key:SEND_KEY,wb:info.wb,customer:info.customer,from:info.from,to:info.to,pieces:info.pieces,weight:info.weight,receivedBy:name,signedAt:time,pngBase64:dataUrl.split(',')[1]})
+        .then(function(){
+          status.textContent='\u2713 Sent to Kobi\u2019s Delivery';
+          instr.innerHTML='All done. You can hand the phone back.';
+          shareBtn.style.display='none';
+        })
+        .catch(function(err){
+          // Tap gesture has expired, so iOS won't open the share sheet by itself; show the Share button instead.
+          shareFallback(false,(err&&err.message)||'error');
+        });
     })();
   };
+  function sendSignature(payload){
+    var ctrl=window.AbortController?new AbortController():null;
+    var t=setTimeout(function(){if(ctrl)ctrl.abort();},SEND_TIMEOUT_MS);
+    // text/plain = "simple" request, so no CORS preflight to Apps Script.
+    return fetch(SEND_URL,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(payload),redirect:'follow',signal:ctrl?ctrl.signal:undefined})
+      .then(function(res){if(!res.ok)throw new Error('HTTP '+res.status);return res.json();})
+      .then(function(j){clearTimeout(t);if(!j||!j.ok)throw new Error((j&&j.error)||'not sent');return j;},
+            function(e){clearTimeout(t);throw (e&&e.name==='AbortError')?new Error('timed out'):(e instanceof TypeError?new Error('no signal'):e);});
+  }
   function escapeHtml(s){return String(s).replace(/[&<>"']/g,function(ch){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch];});}
   function doShare(){
     if(!lastFile) return;
